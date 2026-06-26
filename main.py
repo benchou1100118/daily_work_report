@@ -71,9 +71,24 @@ def save_user_db(users):
 
 
 def ensure_ftp_directory(ftp, directory):
-    """Create missing FTP folders and change into the final directory."""
-    ftp.cwd("/")
-    for part in [segment for segment in directory.split("/") if segment]:
+    """Create missing FTP folders and change into the final directory.
+
+    Some NAS/Windows FTP servers used for handoff folders do not allow clients
+    to change to ``/`` even though the login account can access paths relative
+    to its home directory.  Try the configured path directly first, then create
+    missing segments from the login directory instead of assuming root access.
+    """
+    normalized_directory = "/".join(segment for segment in directory.split("/") if segment)
+    if not normalized_directory:
+        return
+
+    try:
+        ftp.cwd(normalized_directory)
+        return
+    except error_perm:
+        pass
+
+    for part in normalized_directory.split("/"):
         try:
             ftp.cwd(part)
         except error_perm:
@@ -81,9 +96,17 @@ def ensure_ftp_directory(ftp, directory):
             ftp.cwd(part)
 
 
+def open_ftp_connection():
+    """Open an FTP connection using settings that work with common NAS servers."""
+    ftp = FTP(FTP_HOST, timeout=30)
+    ftp.encoding = "utf-8"
+    ftp.set_pasv(True)
+    ftp.login(FTP_USER, FTP_PASSWORD)
+    return ftp
+
+
 def upload_to_ftp(local_file, remote_dir):
-    with FTP(FTP_HOST, timeout=30) as ftp:
-        ftp.login(FTP_USER, FTP_PASSWORD)
+    with open_ftp_connection() as ftp:
         ensure_ftp_directory(ftp, remote_dir)
         remote_name = posixpath.basename(str(local_file))
         with open(local_file, "rb") as stream:
@@ -92,8 +115,7 @@ def upload_to_ftp(local_file, remote_dir):
 
 def download_from_ftp(remote_dir, remote_name, local_file):
     """Download one FTP file into local_file."""
-    with FTP(FTP_HOST, timeout=30) as ftp:
-        ftp.login(FTP_USER, FTP_PASSWORD)
+    with open_ftp_connection() as ftp:
         ensure_ftp_directory(ftp, remote_dir)
         with open(local_file, "wb") as stream:
             ftp.retrbinary("RETR " + remote_name, stream.write)
@@ -101,10 +123,9 @@ def download_from_ftp(remote_dir, remote_name, local_file):
 
 def list_ftp_files(remote_dir):
     """Return file names in an FTP directory."""
-    with FTP(FTP_HOST, timeout=30) as ftp:
-        ftp.login(FTP_USER, FTP_PASSWORD)
+    with open_ftp_connection() as ftp:
         ensure_ftp_directory(ftp, remote_dir)
-        return ftp.nlst()
+        return [posixpath.basename(name) for name in ftp.nlst()]
 
 
 def upload_user_db_to_ftp():
@@ -434,14 +455,18 @@ class MainWindow(QMainWindow):
         self.register_button = QPushButton("註冊新人員")
         self.logout_button = QPushButton("登出")
         self.change_password_button = QPushButton("更改密碼")
+        self.admin_register_button = QPushButton("新增註冊人員")
         self.delete_user_button = QPushButton("刪除人員")
         self.logout_button.setEnabled(False)
         self.change_password_button.setEnabled(False)
+        self.admin_register_button.setVisible(False)
+        self.delete_user_button.setVisible(False)
         self.delete_user_button.setEnabled(False)
         self.login_button.clicked.connect(self.login)
         self.register_button.clicked.connect(self.open_register_dialog)
         self.logout_button.clicked.connect(self.logout)
         self.change_password_button.clicked.connect(self.open_change_password)
+        self.admin_register_button.clicked.connect(self.open_admin_register_dialog)
         self.delete_user_button.clicked.connect(self.open_delete_user_dialog)
         login_layout.addWidget(QLabel("工號"), 0, 0)
         login_layout.addWidget(self.employee_id_input, 0, 1)
@@ -451,6 +476,7 @@ class MainWindow(QMainWindow):
         login_layout.addWidget(self.register_button, 0, 3)
         login_layout.addWidget(self.logout_button, 1, 2)
         login_layout.addWidget(self.change_password_button, 1, 3)
+        login_layout.addWidget(self.admin_register_button, 2, 2)
         login_layout.addWidget(self.delete_user_button, 2, 3)
 
         self.tabs = QTabWidget()
@@ -521,6 +547,22 @@ class MainWindow(QMainWindow):
             self.password_input.clear()
             self.status_label.setText("註冊完成，請輸入密碼登入。")
 
+    def open_admin_register_dialog(self):
+        if not self.is_super_user():
+            QMessageBox.warning(self, "權限不足", "只有 super user 可以新增註冊人員。")
+            return
+        dialog = RegisterDialog(self.users, self)
+        if dialog.exec_() == QDialog.Accepted and dialog.registered_employee_id:
+            self.status_label.setText("super user 已新增註冊人員：{0}".format(dialog.registered_employee_id))
+            self.refresh_daily_summary(show_errors=False)
+
+    def update_super_user_controls(self):
+        is_super = self.is_super_user()
+        self.admin_register_button.setVisible(is_super)
+        self.admin_register_button.setEnabled(is_super)
+        self.delete_user_button.setVisible(is_super)
+        self.delete_user_button.setEnabled(is_super)
+
     def login(self):
         employee_id = self.employee_id_input.text().strip()
         password = self.password_input.text()
@@ -536,7 +578,7 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(True)
         self.logout_button.setEnabled(True)
         self.change_password_button.setEnabled(True)
-        self.delete_user_button.setEnabled(self.is_super_user())
+        self.update_super_user_controls()
         self.login_button.setEnabled(False)
         self.register_button.setEnabled(False)
         self.employee_id_input.setEnabled(False)
@@ -550,7 +592,7 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(False)
         self.logout_button.setEnabled(False)
         self.change_password_button.setEnabled(False)
-        self.delete_user_button.setEnabled(False)
+        self.update_super_user_controls()
         self.login_button.setEnabled(True)
         self.register_button.setEnabled(True)
         self.employee_id_input.setEnabled(True)
