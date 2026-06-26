@@ -9,8 +9,9 @@
 - FTP：`ftp://192.168.153.7`
 - 帳號：`User`
 - 密碼：`123456`
-- 報告資料夾：`Largan_Machine_data/723_daily_work_report`
+- 主資料夾：`Largan_Machine_data/723_daily_work_report`
 - 人員資料資料夾：`Largan_Machine_data/723_daily_work_report/people`
+- 每日報告資料夾：`Largan_Machine_data/723_daily_work_report/daily_data/<工號>/<YYYYMM>`
 
 ## 使用方式
 
@@ -42,7 +43,7 @@ super user（工號 `1100118`）登入後才會顯示管理按鈕，可使用「
 
 ## 日期報告與本機備份
 
-每次送出會先在 `reports/` 建立或覆蓋該人員該日期的 CSV 備份，再上傳至 FTP。檔名格式為：
+每次送出會先在本機 `reports/<工號>/<YYYYMM>/` 建立或覆蓋該人員該日期的 CSV 備份，再上傳至 FTP 的 `Largan_Machine_data/723_daily_work_report/daily_data/<工號>/<YYYYMM>/`。程式會依工號自動建立人員資料夾，再依月份建立分類資料夾。檔名格式為：
 
 ```text
 YYYYMMDD_工號.csv
@@ -59,6 +60,6 @@ YYYYMMDD_工號.csv
 
 統整表會列出所有已註冊人員；尚未填寫當日報告者仍會保留姓名與工號列，工作內容欄位則為空白，方便確認當日登打狀態。
 
-工號 `1100118` 為 super user。只有 super user 登入後可在「當日統整」表格中拖曳列順序；拖曳完成後，排序會先寫入本機 `daily_report_sort_order.json`，再自動上拋至 FTP 報告資料夾，其他使用者於下一次自動更新或按「立即更新」後會套用最新排序。
+工號 `1100118` 為 super user。只有 super user 登入後可在「當日統整」表格中拖曳列順序；拖曳完成後，排序會先寫入本機 `daily_report_sort_order.json`，再自動上拋至 FTP 主資料夾 `Largan_Machine_data/723_daily_work_report`，其他使用者於下一次自動更新或按「立即更新」後會套用最新排序。
 
 多人同時使用時，每台電腦會以 FTP 上最新的 CSV 與排序檔為同步來源。若短時間內多位 super user 同時調整排序，最後成功上傳 FTP 的排序檔會成為下一輪同步顯示的順序。
