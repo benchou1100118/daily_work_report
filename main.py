@@ -39,7 +39,7 @@ FTP_USER = "User"
 FTP_PASSWORD = "123456"
 FTP_ROOT_DIR = "Largan_Machine_data/723_daily_work_report"
 FTP_USER_DB_DIR = FTP_ROOT_DIR + "/people"
-FTP_DAILY_DATA_DIR = FTP_ROOT_DIR + "/daily_data"
+FTP_DAILY_DATA_DIR = FTP_ROOT_DIR + "/daily_work"
 SUPER_USER_EMPLOYEE_ID = "1100118"
 SORT_ORDER_FILENAME = "daily_report_sort_order.json"
 
@@ -142,27 +142,35 @@ def check_ftp_connection():
 
 
 def upload_to_ftp(local_file, remote_dir):
-    """Upload a file and overwrite the remote copy as safely as possible."""
+    """Upload a file and overwrite the remote copy as safely as possible.
+
+    Some FTP handoff servers allow folder creation but reject temporary names
+    such as ``*.uploading`` or do not support renaming files after upload.  Use
+    a CSV-looking temporary name first, then fall back to uploading the final
+    file name directly so report CSV files can still be published.
+    """
     with open_ftp_connection() as ftp:
         ensure_ftp_directory(ftp, remote_dir)
         remote_name = posixpath.basename(str(local_file))
-        temp_remote_name = remote_name + ".uploading"
-        with open(local_file, "rb") as stream:
-            ftp.storbinary("STOR " + temp_remote_name, stream)
+        temp_remote_name = remote_name + ".uploading.csv"
 
         try:
-            ftp.delete(remote_name)
-        except error_perm:
-            pass
+            with open(local_file, "rb") as stream:
+                ftp.storbinary("STOR " + temp_remote_name, stream)
 
-        try:
+            try:
+                ftp.delete(remote_name)
+            except error_perm:
+                pass
+
             ftp.rename(temp_remote_name, remote_name)
         except Exception:
             try:
                 ftp.delete(temp_remote_name)
             except error_perm:
                 pass
-            raise
+            with open(local_file, "rb") as stream:
+                ftp.storbinary("STOR " + remote_name, stream)
 
 
 def download_from_ftp(remote_dir, remote_name, local_file):

@@ -11,7 +11,7 @@
 - 密碼：`123456`
 - 主資料夾：`Largan_Machine_data/723_daily_work_report`
 - 人員資料資料夾：`Largan_Machine_data/723_daily_work_report/people`
-- 每日報告資料夾：`Largan_Machine_data/723_daily_work_report/daily_data/<工號>/<YYYYMM>`
+- 每日報告資料夾：`Largan_Machine_data/723_daily_work_report/daily_work/<工號>/<YYYYMM>`
 
 ## 使用方式
 
@@ -43,7 +43,7 @@ super user（工號 `1100118`）登入後才會顯示管理按鈕，可使用「
 
 ## 日期報告與本機備份
 
-每次送出會先在本機 `reports/<工號>/<YYYYMM>/` 建立或覆蓋該人員該日期的 CSV 備份，再上傳至 FTP 的 `Largan_Machine_data/723_daily_work_report/daily_data/<工號>/<YYYYMM>/`。程式會依工號自動建立人員資料夾，再依月份建立分類資料夾。檔名格式為：
+每次送出會先在本機 `reports/<工號>/<YYYYMM>/` 建立或覆蓋該人員該日期的 CSV 備份，再上傳至 FTP 的 `Largan_Machine_data/723_daily_work_report/daily_work/<工號>/<YYYYMM>/`。程式會依工號自動建立人員資料夾，再依月份建立分類資料夾。檔名格式為：
 
 ```text
 YYYYMMDD_工號.csv
