@@ -275,6 +275,49 @@ class ChangePasswordDialog(QDialog):
         self.accept()
 
 
+class SummaryTableWidget(QTableWidget):
+    """Table widget that reorders whole rows without leaving blank cells."""
+
+    def __init__(self, *args, **kwargs):
+        super(SummaryTableWidget, self).__init__(*args, **kwargs)
+        self.order_changed_callback = None
+
+    def dropEvent(self, event):
+        if self.dragDropMode() != QTableWidget.InternalMove or not self.selectedItems():
+            super(SummaryTableWidget, self).dropEvent(event)
+            return
+
+        source_row = self.currentRow()
+        if source_row < 0:
+            super(SummaryTableWidget, self).dropEvent(event)
+            return
+
+        target_row = self.rowAt(event.pos().y())
+        if target_row < 0:
+            target_row = self.rowCount()
+        if target_row == source_row or target_row == source_row + 1:
+            event.accept()
+            return
+
+        row_items = []
+        for column in range(self.columnCount()):
+            item = self.takeItem(source_row, column)
+            row_items.append(item if item is not None else QTableWidgetItem(""))
+
+        self.removeRow(source_row)
+        if source_row < target_row:
+            target_row -= 1
+
+        self.insertRow(target_row)
+        for column, item in enumerate(row_items):
+            self.setItem(target_row, column, item)
+        self.selectRow(target_row)
+        event.accept()
+
+        if self.order_changed_callback:
+            self.order_changed_callback()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super(MainWindow, self).__init__()
@@ -350,7 +393,7 @@ class MainWindow(QMainWindow):
         summary_layout = QVBoxLayout(summary_tab)
         self.summary_hint = QLabel("顯示當日已註冊人員的當日工作資訊，每 1 分鐘自動更新一次。")
         self.summary_hint.setWordWrap(True)
-        self.summary_table = QTableWidget(0, 7)
+        self.summary_table = SummaryTableWidget(0, 7)
         self.summary_table.setHorizontalHeaderLabels([
             "排序", "姓名", "工號", "機台/線別", "今日工作內容", "異常/待處理事項", "交接備註"
         ])
@@ -358,7 +401,7 @@ class MainWindow(QMainWindow):
         self.summary_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.summary_table.setSelectionMode(QTableWidget.SingleSelection)
         self.summary_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.summary_table.model().rowsMoved.connect(self.on_summary_rows_moved)
+        self.summary_table.order_changed_callback = self.on_summary_order_changed
         self.refresh_summary_button = QPushButton("立即更新")
         self.refresh_summary_button.clicked.connect(self.refresh_daily_summary)
         summary_layout.addWidget(self.summary_hint)
@@ -560,7 +603,7 @@ class MainWindow(QMainWindow):
             report_date, len(self.summary_rows), drag_text
         ))
 
-    def on_summary_rows_moved(self, parent, start, end, destination, row):
+    def on_summary_order_changed(self):
         if not self.is_super_user():
             self.refresh_daily_summary(show_errors=False)
             return
