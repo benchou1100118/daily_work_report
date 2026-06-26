@@ -21,6 +21,7 @@ def load_config():
     wanted = {
         "FTP_HOST",
         "FTP_PORT",
+        "FTP_CONNECT_TIMEOUT_SECONDS",
         "FTP_USER",
         "FTP_PASSWORD",
         "FTP_ROOT_DIR",
@@ -87,7 +88,7 @@ def check_step(label, func):
 
 def main():
     parser = argparse.ArgumentParser(description="Check FTP connectivity, folders, and optional upload behavior.")
-    parser.add_argument("--timeout", type=int, default=10, help="network timeout in seconds")
+    parser.add_argument("--timeout", type=int, default=None, help="network timeout in seconds; defaults to main.py FTP_CONNECT_TIMEOUT_SECONDS")
     parser.add_argument("--upload-test", action="store_true", help="upload and delete a small CSV test file")
     parser.add_argument("--remote-dir", help="override upload-test target directory")
     args = parser.parse_args()
@@ -95,23 +96,24 @@ def main():
     config = load_config()
     host = config["FTP_HOST"]
     port = config["FTP_PORT"]
+    timeout = args.timeout if args.timeout is not None else config.get("FTP_CONNECT_TIMEOUT_SECONDS", 5)
 
-    ok = check_step("tcp {0}:{1}".format(host, port), lambda: socket.create_connection((host, port), args.timeout).close())
+    ok = check_step("tcp {0}:{1}".format(host, port), lambda: socket.create_connection((host, port), timeout).close())
     if not ok:
         print("HINT 網路層無法連到 FTP；請先確認 VPN/內網、IP、port 21、防火牆或路由。")
         return 1
 
-    ok = check_step("login and root listing", lambda: _login_listing(config, args.timeout))
+    ok = check_step("login and root listing", lambda: _login_listing(config, timeout))
     if not ok:
         return 1
 
     for key in ("FTP_ROOT_DIR", "FTP_USER_DB_DIR", "FTP_DAILY_DATA_DIR", "FTP_DAILY_SUMMARY_DIR"):
-        if not check_step("ensure directory " + config[key], lambda key=key: _ensure_dir(config, args.timeout, config[key])):
+        if not check_step("ensure directory " + config[key], lambda key=key: _ensure_dir(config, timeout, config[key])):
             return 1
 
     if args.upload_test:
         remote_dir = args.remote_dir or config["FTP_ROOT_DIR"]
-        if not check_step("upload test to " + remote_dir, lambda: _upload_test(config, args.timeout, remote_dir)):
+        if not check_step("upload test to " + remote_dir, lambda: _upload_test(config, timeout, remote_dir)):
             return 1
 
     return 0
