@@ -156,6 +156,7 @@ def upload_to_ftp(local_file, remote_dir):
         remote_name = posixpath.basename(str(local_file))
         temp_remote_name = remote_name + ".uploading.csv"
 
+        temp_upload_error = None
         try:
             with open(local_file, "rb") as stream:
                 ftp.storbinary("STOR " + temp_remote_name, stream)
@@ -166,13 +167,22 @@ def upload_to_ftp(local_file, remote_dir):
                 pass
 
             ftp.rename(temp_remote_name, remote_name)
-        except Exception:
+        except Exception as exc:
+            temp_upload_error = exc
             try:
                 ftp.delete(temp_remote_name)
             except error_perm:
                 pass
-            with open(local_file, "rb") as stream:
-                ftp.storbinary("STOR " + remote_name, stream)
+            try:
+                with open(local_file, "rb") as stream:
+                    ftp.storbinary("STOR " + remote_name, stream)
+            except Exception as direct_exc:
+                raise RuntimeError(
+                    "FTP上傳失敗；暫存檔上傳/改名失敗：{0}；直接上傳也失敗：{1}".format(
+                        temp_upload_error,
+                        direct_exc,
+                    )
+                ) from direct_exc
 
 
 def download_from_ftp(remote_dir, remote_name, local_file):
