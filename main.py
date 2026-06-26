@@ -40,12 +40,14 @@ FTP_PASSWORD = "123456"
 FTP_ROOT_DIR = "Largan_Machine_data/723_daily_work_report"
 FTP_USER_DB_DIR = FTP_ROOT_DIR + "/people"
 FTP_DAILY_DATA_DIR = FTP_ROOT_DIR + "/daily_work"
+FTP_DAILY_SUMMARY_DIR = FTP_ROOT_DIR + "/daily_summary"
 SUPER_USER_EMPLOYEE_ID = "1100118"
 SORT_ORDER_FILENAME = "daily_report_sort_order.json"
 
 APP_DIR = Path(__file__).resolve().parent
 USER_DB_PATH = APP_DIR / "users.json"
 REPORT_CACHE_DIR = APP_DIR / "reports"
+SUMMARY_CACHE_DIR = APP_DIR / "daily_summary"
 SORT_ORDER_PATH = APP_DIR / SORT_ORDER_FILENAME
 
 
@@ -135,7 +137,7 @@ def check_ftp_connection():
         ftp.pwd()
         ftp.nlst()
 
-    for remote_dir in (FTP_ROOT_DIR, FTP_USER_DB_DIR, FTP_DAILY_DATA_DIR):
+    for remote_dir in (FTP_ROOT_DIR, FTP_USER_DB_DIR, FTP_DAILY_DATA_DIR, FTP_DAILY_SUMMARY_DIR):
         with open_ftp_connection() as ftp:
             ensure_ftp_directory(ftp, remote_dir)
             ftp.pwd()
@@ -182,6 +184,17 @@ def download_from_ftp(remote_dir, remote_name, local_file):
             ftp.retrbinary("RETR " + remote_name, stream.write)
 
 
+def try_download_from_ftp(remote_dir, remote_name, local_file):
+    """Download one FTP file when it exists; return False for a missing file."""
+    try:
+        download_from_ftp(remote_dir, remote_name, local_file)
+    except error_perm as exc:
+        if str(exc).startswith("550"):
+            return False
+        raise
+    return True
+
+
 def list_ftp_files(remote_dir):
     """Return file names in an FTP directory."""
     with open_ftp_connection() as ftp:
@@ -202,6 +215,16 @@ def month_folder(report_date):
 def employee_report_remote_dir(employee_id, report_date):
     """Return the FTP folder for one employee's reports in a specific month."""
     return posixpath.join(FTP_DAILY_DATA_DIR, employee_id, month_folder(report_date))
+
+
+def daily_summary_remote_dir(report_date):
+    """Return the FTP folder for merged daily summaries in a specific month."""
+    return posixpath.join(FTP_DAILY_SUMMARY_DIR, month_folder(report_date))
+
+
+def daily_summary_filename(report_date):
+    """Return the merged daily summary CSV file name for one report date."""
+    return "{date}_daily_summary.csv".format(date=report_date.replace("-", ""))
 
 
 def load_sort_order():
@@ -863,6 +886,56 @@ class MainWindow(QMainWindow):
             rows = list(csv.DictReader(stream))
         return rows[-1] if rows else None
 
+    def read_report_rows(self, path):
+        """Read all rows from one report CSV; malformed/missing files yield no rows."""
+        if not path.exists():
+            return []
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as stream:
+                return list(csv.DictReader(stream))
+        except Exception:
+            return []
+
+    def write_report_rows(self, path, rows):
+        """Write merged report rows using the application report CSV schema."""
+        ensure_local_parent(path)
+        fieldnames = ["報告日期", "填寫時間", "姓名", "工號", "今日工作內容", "異常/待處理事項", "交接備註"]
+        with path.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({field: row.get(field, "") for field in fieldnames})
+
+    def merge_report_rows(self, *row_groups):
+        """Merge report rows and keep the latest row per report date and employee."""
+        merged = {}
+        for rows in row_groups:
+            for row in rows:
+                key = (row.get("報告日期", ""), row.get("工號", ""))
+                if not all(key):
+                    continue
+                current = merged.get(key)
+                if current is None or row.get("填寫時間", "") >= current.get("填寫時間", ""):
+                    merged[key] = row
+        return sorted(merged.values(), key=lambda row: (row.get("報告日期", ""), row.get("工號", "")))
+
+    def merge_remote_report_before_upload(self, report_date, local_file, new_row):
+        """Download the FTP copy first, merge it with local data, then rewrite local_file."""
+        remote_dir = employee_report_remote_dir(self.current_user["employee_id"], report_date)
+        remote_file = local_file.with_suffix(".ftp.csv")
+        try:
+            remote_exists = try_download_from_ftp(remote_dir, local_file.name, remote_file)
+        except Exception:
+            remote_file.unlink(missing_ok=True)
+            raise
+
+        local_rows = self.read_report_rows(local_file)
+        remote_rows = self.read_report_rows(remote_file) if remote_exists else []
+        merged_rows = self.merge_report_rows(remote_rows, local_rows, [new_row])
+        self.write_report_rows(local_file, merged_rows)
+        remote_file.unlink(missing_ok=True)
+        return remote_exists
+
     def collect_today_summary(self, report_date):
         prefix = report_date.replace("-", "")
         reports_by_employee = {}
@@ -891,8 +964,42 @@ class MainWindow(QMainWindow):
         rows.sort(key=lambda row: (order_index.get(row["employee_id"], len(order_index)), row["employee_id"]))
         return rows
 
+    def write_daily_summary_csv(self, report_date, rows):
+        """Persist the merged daily summary locally before uploading it to FTP."""
+        local_file = SUMMARY_CACHE_DIR / month_folder(report_date) / daily_summary_filename(report_date)
+        ensure_local_parent(local_file)
+        with local_file.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["報告日期", "排序", "姓名", "工號", "今日工作內容", "異常/待處理事項", "交接備註"])
+            for row_index, row in enumerate(rows, start=1):
+                writer.writerow([
+                    report_date,
+                    row_index,
+                    row["name"],
+                    row["employee_id"],
+                    row["summary"],
+                    row["issues"],
+                    row["handoff"],
+                ])
+        return local_file
+
+    def upload_daily_summary(self, report_date, rows):
+        """Download the FTP summary first, regenerate locally, then upload the merged result."""
+        local_file = self.write_daily_summary_csv(report_date, rows)
+        remote_dir = daily_summary_remote_dir(report_date)
+        remote_file = local_file.with_suffix(".ftp.csv")
+        try:
+            try_download_from_ftp(remote_dir, local_file.name, remote_file)
+        except Exception:
+            remote_file.unlink(missing_ok=True)
+            raise
+        remote_file.unlink(missing_ok=True)
+        upload_to_ftp(local_file, remote_dir)
+        return local_file
+
     def refresh_daily_summary(self, show_errors=True):
         report_date = self.today_report_date()
+        synced_from_ftp = False
         try:
             self.sync_today_reports_from_ftp(report_date)
         except Exception as exc:
@@ -901,8 +1008,18 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("FTP同步失敗，已改用本機資料更新統整：{0}".format(exc))
         else:
             self.set_ftp_connected(True)
+            synced_from_ftp = True
 
         self.summary_rows = self.collect_today_summary(report_date)
+        if synced_from_ftp:
+            try:
+                self.upload_daily_summary(report_date, self.summary_rows)
+            except Exception as exc:
+                self.set_ftp_connected(False, str(exc))
+                if show_errors:
+                    self.status_label.setText("當日統整上拋失敗，已保留本機統整檔：{0}".format(exc))
+            else:
+                self.set_ftp_connected(True)
         self.summary_table.blockSignals(True)
         self.summary_table.setRowCount(len(self.summary_rows))
         for row_index, row in enumerate(self.summary_rows):
@@ -959,21 +1076,19 @@ class MainWindow(QMainWindow):
         self.update_upload_path_label()
         report_date = self.selected_report_date()
         local_file = self.report_file_path(report_date)
-        local_file.parent.mkdir(parents=True, exist_ok=True)
-        with local_file.open("w", encoding="utf-8-sig", newline="") as stream:
-            writer = csv.writer(stream)
-            writer.writerow(["報告日期", "填寫時間", "姓名", "工號", "今日工作內容", "異常/待處理事項", "交接備註"])
-            writer.writerow([
-                report_date,
-                now.strftime("%Y-%m-%d %H:%M:%S"),
-                self.current_user["name"],
-                self.current_user["employee_id"],
-                self.work_summary.toPlainText(),
-                self.issue_notes.toPlainText(),
-                self.next_shift_notes.toPlainText(),
-            ])
+        new_row = {
+            "報告日期": report_date,
+            "填寫時間": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "姓名": self.current_user["name"],
+            "工號": self.current_user["employee_id"],
+            "今日工作內容": self.work_summary.toPlainText(),
+            "異常/待處理事項": self.issue_notes.toPlainText(),
+            "交接備註": self.next_shift_notes.toPlainText(),
+        }
+        self.write_report_rows(local_file, self.merge_report_rows(self.read_report_rows(local_file), [new_row]))
 
         try:
+            self.merge_remote_report_before_upload(report_date, local_file, new_row)
             upload_to_ftp(
                 local_file,
                 employee_report_remote_dir(self.current_user["employee_id"], report_date),
