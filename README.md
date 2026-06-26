@@ -9,8 +9,8 @@
 - FTP：`ftp://192.168.153.7`
 - 帳號：`User`
 - 密碼：`123456`
-- 報告資料夾：`Largan_Machine_data/個人資夾/@交接資料/每日工作匯報`
-- 人員資料資料夾：`Largan_Machine_data/個人資夾/@交接資料/每日工作匯報/人員資料`
+- 報告資料夾：`Largan_Machine_data/723_daily_work_report`
+- 人員資料資料夾：`Largan_Machine_data/723_daily_work_report/people`
 
 ## 使用方式
 

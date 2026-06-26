@@ -36,8 +36,8 @@ from PySide2.QtWidgets import (
 FTP_HOST = "192.168.153.7"
 FTP_USER = "User"
 FTP_PASSWORD = "123456"
-FTP_REPORT_DIR = "Largan_Machine_data/個人資夾/@交接資料/每日工作匯報"
-FTP_USER_DB_DIR = "Largan_Machine_data/個人資夾/@交接資料/每日工作匯報/人員資料"
+FTP_REPORT_DIR = "Largan_Machine_data/723_daily_work_report"
+FTP_USER_DB_DIR = "Largan_Machine_data/723_daily_work_report/people"
 SUPER_USER_EMPLOYEE_ID = "1100118"
 SORT_ORDER_FILENAME = "daily_report_sort_order.json"
 
