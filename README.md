@@ -12,6 +12,7 @@
 - 主資料夾：`Largan_Machine_data/723_daily_work_report`
 - 人員資料資料夾：`Largan_Machine_data/723_daily_work_report/people`
 - 每日報告資料夾：`Largan_Machine_data/723_daily_work_report/daily_work/<工號>/<YYYYMM>`
+- 當日統整資料夾：`Largan_Machine_data/723_daily_work_report/daily_summary/<YYYYMM>`
 
 ## 使用方式
 
@@ -43,13 +44,13 @@ super user（工號 `1100118`）登入後才會顯示管理按鈕，可使用「
 
 ## 日期報告與本機備份
 
-每次送出會先在本機 `reports/<工號>/<YYYYMM>/` 建立或覆蓋該人員該日期的 CSV 備份，再上傳至 FTP 的 `Largan_Machine_data/723_daily_work_report/daily_work/<工號>/<YYYYMM>/`。程式會依工號自動建立人員資料夾，再依月份建立分類資料夾。檔名格式為：
+每次送出會先在本機 `reports/<工號>/<YYYYMM>/` 建立或更新該人員該日期的 CSV 備份；上傳前會先從 FTP 下載同名 CSV，於本機依「報告日期 + 工號」合併並保留最新填寫時間，再上傳至 FTP 的 `Largan_Machine_data/723_daily_work_report/daily_work/<工號>/<YYYYMM>/`。若 FTP 端沒有同名檔案，則直接以上述本機檔案上傳。程式會依工號自動建立人員資料夾，再依月份建立分類資料夾。檔名格式為：
 
 ```text
 YYYYMMDD_工號.csv
 ```
 
-為避免部分 FTP 伺服器在處理中文檔名時回覆 `451 Requested action aborted: local error in processing`，檔名只保留日期與工號；姓名仍會寫在 CSV 內容中。若 FTP 連線失敗，程式會保留本機 CSV 並顯示錯誤訊息。再次登入並點選相同日期時，會自動載入本機備份內容，方便修改後重新上傳。
+為避免部分 FTP 伺服器在處理中文檔名時回覆 `451 Requested action aborted: local error in processing`，檔名只保留日期與工號；姓名仍會寫在 CSV 內容中。若 FTP 連線失敗，程式會保留本機 CSV 並顯示錯誤訊息。再次登入並點選相同日期時，會自動載入本機備份內容，方便修改後重新上傳。每位人員的工作日誌皆依工號分資料夾存放，避免不同人員上傳同日期資料時互相覆蓋。
 
 ## 當日統整與排序
 
@@ -62,4 +63,4 @@ YYYYMMDD_工號.csv
 
 工號 `1100118` 為 super user。只有 super user 登入後可在「當日統整」表格中拖曳列順序；拖曳完成後，排序會先寫入本機 `daily_report_sort_order.json`，再自動上拋至 FTP 主資料夾 `Largan_Machine_data/723_daily_work_report`，其他使用者於下一次自動更新或按「立即更新」後會套用最新排序。
 
-多人同時使用時，每台電腦會以 FTP 上最新的 CSV 與排序檔為同步來源。若短時間內多位 super user 同時調整排序，最後成功上傳 FTP 的排序檔會成為下一輪同步顯示的順序。
+多人同時使用時，每台電腦會以 FTP 上最新的 CSV 與排序檔為同步來源。當日統整每次更新會先重新從 FTP 下載各工號當日 CSV 與排序檔，在本機統整成 `daily_summary/<YYYYMM>/YYYYMMDD_daily_summary.csv` 後再上拋至 FTP；若 FTP 端尚無統整檔，則直接上傳本機統整結果。若短時間內多位 super user 同時調整排序，最後成功上傳 FTP 的排序檔會成為下一輪同步顯示的順序。
