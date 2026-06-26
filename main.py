@@ -37,40 +37,67 @@ FTP_REPORT_DIR = "Largan_Machine_data/個人資夾/@交接資料/每日工作匯
 
 APP_DIR = Path(__file__).resolve().parent
 USER_DB_PATH = APP_DIR / "users.json"
+STAFF_ROSTER_PATH = APP_DIR / "staff.json"
 REPORT_CACHE_DIR = APP_DIR / "reports"
 DEFAULT_PASSWORD = "0000"
-
-# TODO: Replace or extend this list with the actual staff roster before deployment.
-PRELOADED_USERS = [
-    {"name": "王小明", "employee_id": "A0001"},
-    {"name": "陳美玲", "employee_id": "A0002"},
-    {"name": "林志強", "employee_id": "A0003"},
-]
 
 
 def hash_password(password):
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
+def load_staff_roster():
+    """Load the staff roster maintained outside of the application code."""
+    if not STAFF_ROSTER_PATH.exists():
+        raise RuntimeError("找不到人員名單檔案：{0}".format(STAFF_ROSTER_PATH))
+
+    with STAFF_ROSTER_PATH.open("r", encoding="utf-8") as stream:
+        staff_roster = json.load(stream)
+
+    if not isinstance(staff_roster, list):
+        raise RuntimeError("人員名單格式錯誤：staff.json 必須是人員陣列。")
+
+    normalized_roster = []
+    seen_employee_ids = set()
+    for index, staff in enumerate(staff_roster, start=1):
+        if not isinstance(staff, dict):
+            raise RuntimeError("人員名單第 {0} 筆格式錯誤。".format(index))
+
+        name = str(staff.get("name", "")).strip()
+        employee_id = str(staff.get("employee_id", "")).strip()
+        if not name or not employee_id:
+            raise RuntimeError("人員名單第 {0} 筆缺少 name 或 employee_id。".format(index))
+        if employee_id in seen_employee_ids:
+            raise RuntimeError("人員名單工號重複：{0}".format(employee_id))
+
+        seen_employee_ids.add(employee_id)
+        normalized_roster.append({"name": name, "employee_id": employee_id})
+
+    if not normalized_roster:
+        raise RuntimeError("人員名單不可為空。")
+
+    return normalized_roster
+
+
 def ensure_user_db():
-    """Create or update the local user password store from PRELOADED_USERS."""
-    users = {}
+    """Create or update the local user password store from staff.json."""
+    staff_roster = load_staff_roster()
+    existing_users = {}
     if USER_DB_PATH.exists():
         with USER_DB_PATH.open("r", encoding="utf-8") as stream:
-            users = json.load(stream)
+            existing_users = json.load(stream)
 
-    changed = False
-    for user in PRELOADED_USERS:
-        employee_id = user["employee_id"]
-        if employee_id not in users:
-            users[employee_id] = {
-                "name": user["name"],
-                "employee_id": employee_id,
-                "password_hash": hash_password(DEFAULT_PASSWORD),
-            }
-            changed = True
-        elif users[employee_id].get("name") != user["name"]:
-            users[employee_id]["name"] = user["name"]
+    users = {}
+    changed = set(existing_users.keys()) != {staff["employee_id"] for staff in staff_roster}
+    for staff in staff_roster:
+        employee_id = staff["employee_id"]
+        existing_user = existing_users.get(employee_id, {})
+        users[employee_id] = {
+            "name": staff["name"],
+            "employee_id": employee_id,
+            "password_hash": existing_user.get("password_hash", hash_password(DEFAULT_PASSWORD)),
+        }
+        if existing_user.get("name") != staff["name"]:
             changed = True
 
     if changed or not USER_DB_PATH.exists():
