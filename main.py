@@ -106,11 +106,27 @@ def open_ftp_connection():
 
 
 def upload_to_ftp(local_file, remote_dir):
+    """Upload a file and overwrite the remote copy as safely as possible."""
     with open_ftp_connection() as ftp:
         ensure_ftp_directory(ftp, remote_dir)
         remote_name = posixpath.basename(str(local_file))
+        temp_remote_name = remote_name + ".uploading"
         with open(local_file, "rb") as stream:
-            ftp.storbinary("STOR " + remote_name, stream)
+            ftp.storbinary("STOR " + temp_remote_name, stream)
+
+        try:
+            ftp.delete(remote_name)
+        except error_perm:
+            pass
+
+        try:
+            ftp.rename(temp_remote_name, remote_name)
+        except Exception:
+            try:
+                ftp.delete(temp_remote_name)
+            except error_perm:
+                pass
+            raise
 
 
 def download_from_ftp(remote_dir, remote_name, local_file):
@@ -621,6 +637,13 @@ class MainWindow(QMainWindow):
         )
 
     def report_file_path(self, report_date):
+        filename = "{date}_{employee_id}.csv".format(
+            date=report_date.replace("-", ""),
+            employee_id=self.current_user["employee_id"],
+        )
+        return REPORT_CACHE_DIR / filename
+
+    def legacy_report_file_path(self, report_date):
         filename = "{date}_{employee_id}_{name}.csv".format(
             date=report_date.replace("-", ""),
             employee_id=self.current_user["employee_id"],
@@ -643,6 +666,11 @@ class MainWindow(QMainWindow):
 
         report_date = self.selected_report_date()
         local_file = self.report_file_path(report_date)
+        if not local_file.exists():
+            legacy_file = self.legacy_report_file_path(report_date)
+            if legacy_file.exists():
+                local_file = legacy_file
+
         if not local_file.exists():
             self.clear_report_fields()
             self.status_label.setText(
