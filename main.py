@@ -112,10 +112,18 @@ def open_ftp_connection():
 
 
 def check_ftp_connection():
-    """Verify FTP is reachable and required remote folders can be entered/created."""
-    with open_ftp_connection() as ftp:
-        ensure_ftp_directory(ftp, FTP_REPORT_DIR)
-        ensure_ftp_directory(ftp, FTP_USER_DB_DIR)
+    """Verify FTP is reachable and required remote folders can be entered/created.
+
+    Each configured folder is checked with a fresh FTP session.  The handoff
+    server is commonly opened by operators as
+    ``ftp://User@192.168.153.7/Largan_Machine_data`` and treats paths as
+    relative to the login location.  Reusing one session after entering the
+    report folder would make the second check resolve from that nested folder
+    instead of from the login location.
+    """
+    for remote_dir in (FTP_REPORT_DIR, FTP_USER_DB_DIR):
+        with open_ftp_connection() as ftp:
+            ensure_ftp_directory(ftp, remote_dir)
 
 
 def upload_to_ftp(local_file, remote_dir):
