@@ -11,7 +11,7 @@ from datetime import datetime
 from ftplib import FTP, error_perm
 from pathlib import Path
 
-from PySide2.QtCore import QDate, Qt
+from PySide2.QtCore import QDate, QTimer, Qt
 from PySide2.QtWidgets import (
     QApplication,
     QCalendarWidget,
@@ -24,6 +24,9 @@ from PySide2.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -35,10 +38,13 @@ FTP_USER = "User"
 FTP_PASSWORD = "123456"
 FTP_REPORT_DIR = "Largan_Machine_data/個人資夾/@交接資料/每日工作匯報"
 FTP_USER_DB_DIR = "Largan_Machine_data/個人資夾/@交接資料/每日工作匯報/人員資料"
+SUPER_USER_EMPLOYEE_ID = "1100118"
+SORT_ORDER_FILENAME = "daily_report_sort_order.json"
 
 APP_DIR = Path(__file__).resolve().parent
 USER_DB_PATH = APP_DIR / "users.json"
 REPORT_CACHE_DIR = APP_DIR / "reports"
+SORT_ORDER_PATH = APP_DIR / SORT_ORDER_FILENAME
 
 
 def hash_password(password):
@@ -84,9 +90,52 @@ def upload_to_ftp(local_file, remote_dir):
             ftp.storbinary("STOR " + remote_name, stream)
 
 
+def download_from_ftp(remote_dir, remote_name, local_file):
+    """Download one FTP file into local_file."""
+    with FTP(FTP_HOST, timeout=30) as ftp:
+        ftp.login(FTP_USER, FTP_PASSWORD)
+        ensure_ftp_directory(ftp, remote_dir)
+        with open(local_file, "wb") as stream:
+            ftp.retrbinary("RETR " + remote_name, stream.write)
+
+
+def list_ftp_files(remote_dir):
+    """Return file names in an FTP directory."""
+    with FTP(FTP_HOST, timeout=30) as ftp:
+        ftp.login(FTP_USER, FTP_PASSWORD)
+        ensure_ftp_directory(ftp, remote_dir)
+        return ftp.nlst()
+
+
 def upload_user_db_to_ftp():
     """Upload the locally saved user database to FTP after local persistence."""
     upload_to_ftp(USER_DB_PATH, FTP_USER_DB_DIR)
+
+
+def load_sort_order():
+    """Load the shared summary ordering; missing or malformed files fall back to empty order."""
+    if not SORT_ORDER_PATH.exists():
+        return {"order": [], "updated_at": "", "updated_by": ""}
+    try:
+        with SORT_ORDER_PATH.open("r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+    except (IOError, ValueError):
+        return {"order": [], "updated_at": "", "updated_by": ""}
+    if not isinstance(payload, dict) or not isinstance(payload.get("order"), list):
+        return {"order": [], "updated_at": "", "updated_by": ""}
+    return payload
+
+
+def save_sort_order(order, user):
+    """Persist sort order locally before it is uploaded to FTP."""
+    payload = {
+        "order": order,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_by": "{0} ({1})".format(user["name"], user["employee_id"]) if user else "",
+    }
+    with SORT_ORDER_PATH.open("w", encoding="utf-8") as stream:
+        json.dump(payload, stream, ensure_ascii=False, indent=2)
+    return payload
 
 
 class RegisterDialog(QDialog):
@@ -231,9 +280,15 @@ class MainWindow(QMainWindow):
         super(MainWindow, self).__init__()
         self.users = load_user_db()
         self.current_user = None
+        self.summary_rows = []
         self.setWindowTitle("每日工作匯報")
         self.resize(900, 680)
         self._build_ui()
+        self.summary_timer = QTimer(self)
+        self.summary_timer.setInterval(60 * 1000)
+        self.summary_timer.timeout.connect(self.refresh_daily_summary)
+        self.summary_timer.start()
+        self.refresh_daily_summary(show_errors=False)
 
     def _build_ui(self):
         central = QWidget()
@@ -264,6 +319,10 @@ class MainWindow(QMainWindow):
         login_layout.addWidget(self.logout_button, 1, 2)
         login_layout.addWidget(self.change_password_button, 1, 3)
 
+        self.tabs = QTabWidget()
+        edit_tab = QWidget()
+        edit_layout = QVBoxLayout(edit_tab)
+
         date_group = QGroupBox("日期")
         date_layout = QVBoxLayout(date_group)
         self.calendar = QCalendarWidget()
@@ -284,6 +343,31 @@ class MainWindow(QMainWindow):
         report_layout.addRow("異常/待處理事項", self.issue_notes)
         report_layout.addRow("交接備註", self.next_shift_notes)
 
+        edit_layout.addWidget(date_group)
+        edit_layout.addWidget(report_group)
+
+        summary_tab = QWidget()
+        summary_layout = QVBoxLayout(summary_tab)
+        self.summary_hint = QLabel("顯示當日已註冊人員的當日工作資訊，每 1 分鐘自動更新一次。")
+        self.summary_hint.setWordWrap(True)
+        self.summary_table = QTableWidget(0, 7)
+        self.summary_table.setHorizontalHeaderLabels([
+            "排序", "姓名", "工號", "機台/線別", "今日工作內容", "異常/待處理事項", "交接備註"
+        ])
+        self.summary_table.setDragDropMode(QTableWidget.InternalMove)
+        self.summary_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.summary_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.summary_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.summary_table.model().rowsMoved.connect(self.on_summary_rows_moved)
+        self.refresh_summary_button = QPushButton("立即更新")
+        self.refresh_summary_button.clicked.connect(self.refresh_daily_summary)
+        summary_layout.addWidget(self.summary_hint)
+        summary_layout.addWidget(self.summary_table)
+        summary_layout.addWidget(self.refresh_summary_button, alignment=Qt.AlignRight)
+
+        self.tabs.addTab(edit_tab, "登打資料")
+        self.tabs.addTab(summary_tab, "當日統整")
+
         self.status_label = QLabel("請輸入工號與密碼登入；未註冊者請先註冊。")
         self.status_label.setWordWrap(True)
         self.save_button = QPushButton("儲存並上傳FTP")
@@ -291,8 +375,7 @@ class MainWindow(QMainWindow):
         self.save_button.clicked.connect(self.save_report)
 
         layout.addWidget(login_group)
-        layout.addWidget(date_group)
-        layout.addWidget(report_group)
+        layout.addWidget(self.tabs)
         layout.addWidget(self.status_label)
         layout.addWidget(self.save_button, alignment=Qt.AlignRight)
         self.setCentralWidget(central)
@@ -324,6 +407,7 @@ class MainWindow(QMainWindow):
         self.employee_id_input.setEnabled(False)
         self.status_label.setText("已登入：{name} ({employee_id})".format(**user))
         self.load_selected_report()
+        self.refresh_daily_summary(show_errors=False)
 
     def logout(self):
         self.current_user = None
@@ -335,6 +419,7 @@ class MainWindow(QMainWindow):
         self.register_button.setEnabled(True)
         self.employee_id_input.setEnabled(True)
         self.status_label.setText("已登出。")
+        self.refresh_daily_summary(show_errors=False)
 
     def open_change_password(self):
         if not self.current_user:
@@ -355,6 +440,9 @@ class MainWindow(QMainWindow):
             name=self.current_user["name"],
         )
         return REPORT_CACHE_DIR / filename
+
+    def is_super_user(self):
+        return bool(self.current_user and self.current_user.get("employee_id") == SUPER_USER_EMPLOYEE_ID)
 
     def clear_report_fields(self):
         self.machine_input.clear()
@@ -395,6 +483,107 @@ class MainWindow(QMainWindow):
         self.next_shift_notes.setPlainText(report.get("交接備註", ""))
         self.status_label.setText("已載入 {0} 的報告：{1}".format(report_date, local_file.name))
 
+    def today_report_date(self):
+        today = QDate.currentDate()
+        return "{0:04d}-{1:02d}-{2:02d}".format(today.year(), today.month(), today.day())
+
+    def sync_today_reports_from_ftp(self, report_date):
+        """Download today's report CSV files so summary reflects multi-user FTP updates."""
+        REPORT_CACHE_DIR.mkdir(exist_ok=True)
+        prefix = report_date.replace("-", "")
+        for remote_name in list_ftp_files(FTP_REPORT_DIR):
+            if remote_name.startswith(prefix) and remote_name.endswith(".csv"):
+                download_from_ftp(FTP_REPORT_DIR, remote_name, REPORT_CACHE_DIR / remote_name)
+        try:
+            download_from_ftp(FTP_REPORT_DIR, SORT_ORDER_FILENAME, SORT_ORDER_PATH)
+        except Exception:
+            pass
+
+    def read_report_csv(self, path):
+        with path.open("r", encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        return rows[-1] if rows else None
+
+    def collect_today_summary(self, report_date):
+        prefix = report_date.replace("-", "")
+        reports_by_employee = {}
+        if REPORT_CACHE_DIR.exists():
+            for path in REPORT_CACHE_DIR.glob(prefix + "_*.csv"):
+                try:
+                    report = self.read_report_csv(path)
+                except Exception:
+                    continue
+                if report:
+                    reports_by_employee[report.get("工號", "")] = report
+
+        rows = []
+        for employee_id, user in self.users.items():
+            report = reports_by_employee.get(employee_id, {})
+            rows.append({
+                "employee_id": employee_id,
+                "name": user.get("name", ""),
+                "machine": report.get("機台/線別", ""),
+                "summary": report.get("今日工作內容", ""),
+                "issues": report.get("異常/待處理事項", ""),
+                "handoff": report.get("交接備註", ""),
+            })
+
+        order = load_sort_order().get("order", [])
+        order_index = {employee_id: index for index, employee_id in enumerate(order)}
+        rows.sort(key=lambda row: (order_index.get(row["employee_id"], len(order_index)), row["employee_id"]))
+        return rows
+
+    def refresh_daily_summary(self, show_errors=True):
+        report_date = self.today_report_date()
+        try:
+            self.sync_today_reports_from_ftp(report_date)
+        except Exception as exc:
+            if show_errors:
+                self.status_label.setText("FTP同步失敗，已改用本機資料更新統整：{0}".format(exc))
+
+        self.summary_rows = self.collect_today_summary(report_date)
+        self.summary_table.blockSignals(True)
+        self.summary_table.setRowCount(len(self.summary_rows))
+        for row_index, row in enumerate(self.summary_rows):
+            values = [
+                str(row_index + 1), row["name"], row["employee_id"], row["machine"],
+                row["summary"], row["issues"], row["handoff"],
+            ]
+            for column, value in enumerate(values):
+                self.summary_table.setItem(row_index, column, QTableWidgetItem(value))
+        self.summary_table.resizeColumnsToContents()
+        self.summary_table.blockSignals(False)
+        drag_text = "可拖曳調整排序並上拋FTP。" if self.is_super_user() else "僅 super user（工號 1100118）可拖曳調整排序。"
+        self.summary_table.setDragEnabled(self.is_super_user())
+        self.summary_table.setAcceptDrops(self.is_super_user())
+        self.summary_hint.setText("{0} 統整完成，共 {1} 位已註冊人員；每 1 分鐘自動更新一次，{2}".format(
+            report_date, len(self.summary_rows), drag_text
+        ))
+
+    def on_summary_rows_moved(self, parent, start, end, destination, row):
+        if not self.is_super_user():
+            self.refresh_daily_summary(show_errors=False)
+            return
+        order = []
+        for row_index in range(self.summary_table.rowCount()):
+            item = self.summary_table.item(row_index, 2)
+            if item:
+                order.append(item.text())
+        # Multi-user note: refresh remote order immediately before writing so the
+        # upload is based on the newest available FTP copy, then publish one JSON.
+        try:
+            download_from_ftp(FTP_REPORT_DIR, SORT_ORDER_FILENAME, SORT_ORDER_PATH)
+        except Exception:
+            pass
+        save_sort_order(order, self.current_user)
+        try:
+            upload_to_ftp(SORT_ORDER_PATH, FTP_REPORT_DIR)
+        except Exception as exc:
+            QMessageBox.warning(self, "排序上拋失敗", "排序已先儲存在本機，但上拋FTP失敗：\n{0}".format(exc))
+        else:
+            self.status_label.setText("排序已由 super user 上拋FTP。")
+        self.refresh_daily_summary(show_errors=False)
+
     def save_report(self):
         if not self.current_user:
             QMessageBox.warning(self, "錯誤", "請先登入。")
@@ -426,10 +615,12 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # UI boundary: show any FTP/file error to the operator.
             QMessageBox.critical(self, "上傳失敗", "已本機儲存，但FTP上傳失敗：\n{0}".format(exc))
             self.status_label.setText("本機備份：{0}；FTP上傳失敗。".format(local_file))
+            self.refresh_daily_summary(show_errors=False)
             return
 
         QMessageBox.information(self, "完成", "工作匯報已儲存並上傳FTP。")
         self.status_label.setText("已上傳：{0}".format(local_file.name))
+        self.refresh_daily_summary(show_errors=False)
 
 
 def main():
