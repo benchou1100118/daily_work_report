@@ -64,3 +64,25 @@ YYYYMMDD_工號.csv
 工號 `1100118` 為 super user。只有 super user 登入後可在「當日統整」表格中拖曳列順序；拖曳完成後，排序會先寫入本機 `daily_report_sort_order.json`，再自動上拋至 FTP 主資料夾 `Largan_Machine_data/723_daily_work_report`，其他使用者於下一次自動更新或按「立即更新」後會套用最新排序。
 
 多人同時使用時，每台電腦會以 FTP 上最新的 CSV 與排序檔為同步來源。當日統整每次更新會先重新從 FTP 下載各工號當日 CSV 與排序檔，在本機統整成 `daily_summary/<YYYYMM>/YYYYMMDD_daily_summary.csv` 後再上拋至 FTP；若 FTP 端尚無統整檔，則直接上傳本機統整結果。若短時間內多位 super user 同時調整排序，最後成功上傳 FTP 的排序檔會成為下一輪同步顯示的順序。
+
+### FTP 連線與上傳診斷
+
+若畫面顯示「上傳失敗」，可先在程式所在資料夾用不啟動 UI 的方式確認 FTP 狀態：
+
+```bash
+python tools/ftp_diagnostics.py --timeout 5
+```
+
+此指令會依序測試 TCP 是否可連到 `192.168.153.7:21`、帳密登入、起始目錄清單，以及程式需要的 FTP 資料夾是否可進入或建立。若第一步出現 `Network is unreachable`，代表目前電腦不在可連到該 FTP 的內網/VPN 路由上，需先確認網路、VPN、防火牆或 FTP 主機狀態。
+
+若連線與資料夾檢查都成功，可再做小檔案上傳/列檔/刪除測試：
+
+```bash
+python tools/ftp_diagnostics.py --timeout 5 --upload-test
+```
+
+也可以指定要測試的遠端資料夾，例如測試某位人員當月工作日誌資料夾：
+
+```bash
+python tools/ftp_diagnostics.py --timeout 5 --upload-test --remote-dir Largan_Machine_data/723_daily_work_report/daily_work/1100118/202606
+```
