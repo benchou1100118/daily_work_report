@@ -560,11 +560,9 @@ class MainWindow(QMainWindow):
 
         report_group = QGroupBox("工作內容")
         report_layout = QFormLayout(report_group)
-        self.machine_input = QLineEdit()
         self.work_summary = QTextEdit()
         self.issue_notes = QTextEdit()
         self.next_shift_notes = QTextEdit()
-        report_layout.addRow("機台/線別", self.machine_input)
         report_layout.addRow("今日工作內容", self.work_summary)
         report_layout.addRow("異常/待處理事項", self.issue_notes)
         report_layout.addRow("交接備註", self.next_shift_notes)
@@ -576,9 +574,9 @@ class MainWindow(QMainWindow):
         summary_layout = QVBoxLayout(summary_tab)
         self.summary_hint = QLabel("顯示當日已註冊人員的當日工作資訊，每 1 分鐘自動更新一次。")
         self.summary_hint.setWordWrap(True)
-        self.summary_table = SummaryTableWidget(0, 7)
+        self.summary_table = SummaryTableWidget(0, 6)
         self.summary_table.setHorizontalHeaderLabels([
-            "排序", "姓名", "工號", "機台/線別", "今日工作內容", "異常/待處理事項", "交接備註"
+            "排序", "姓名", "工號", "今日工作內容", "異常/待處理事項", "交接備註"
         ])
         self.summary_table.setDragDropMode(QTableWidget.InternalMove)
         self.summary_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -603,6 +601,9 @@ class MainWindow(QMainWindow):
         ftp_status_layout.addWidget(self.recheck_ftp_button)
         self.status_label = QLabel("請輸入工號與密碼登入；未註冊者請先註冊。")
         self.status_label.setWordWrap(True)
+        self.upload_path_label = QLabel("")
+        self.upload_path_label.setWordWrap(True)
+        self.upload_path_label.setVisible(False)
         self.save_button = QPushButton("儲存並上傳FTP")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self.save_report)
@@ -611,6 +612,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tabs)
         layout.addLayout(ftp_status_layout)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.upload_path_label)
         layout.addWidget(self.save_button, alignment=Qt.AlignRight)
         self.setCentralWidget(central)
 
@@ -623,6 +625,7 @@ class MainWindow(QMainWindow):
         if detail:
             text = "{0}（{1}）".format(text, detail)
         self.ftp_status_label.setText(text)
+        self.update_upload_path_label()
 
     def initialize_ftp_connection(self):
         try:
@@ -687,6 +690,7 @@ class MainWindow(QMainWindow):
         self.logout_button.setEnabled(True)
         self.change_password_button.setEnabled(True)
         self.update_super_user_controls()
+        self.update_upload_path_label()
         self.login_button.setEnabled(False)
         self.register_button.setEnabled(False)
         self.employee_id_input.setEnabled(False)
@@ -701,6 +705,7 @@ class MainWindow(QMainWindow):
         self.logout_button.setEnabled(False)
         self.change_password_button.setEnabled(False)
         self.update_super_user_controls()
+        self.update_upload_path_label()
         self.login_button.setEnabled(True)
         self.register_button.setEnabled(True)
         self.employee_id_input.setEnabled(True)
@@ -758,8 +763,26 @@ class MainWindow(QMainWindow):
     def is_super_user(self):
         return bool(self.current_user and self.current_user.get("employee_id") == SUPER_USER_EMPLOYEE_ID)
 
+
+    def update_upload_path_label(self):
+        """Show super user where the selected report will be uploaded."""
+        if not self.is_super_user() or not self.ftp_connected:
+            self.upload_path_label.clear()
+            self.upload_path_label.setVisible(False)
+            return
+
+        report_date = self.selected_report_date()
+        local_file = self.report_file_path(report_date)
+        remote_dir = employee_report_remote_dir(self.current_user["employee_id"], report_date)
+        remote_path = posixpath.join(remote_dir, local_file.name)
+        self.upload_path_label.setText(
+            "super user FTP上傳資訊：要上傳的本機檔案：{0}；上傳到FTP：{1}".format(
+                local_file, remote_path
+            )
+        )
+        self.upload_path_label.setVisible(True)
+
     def clear_report_fields(self):
-        self.machine_input.clear()
         self.work_summary.clear()
         self.issue_notes.clear()
         self.next_shift_notes.clear()
@@ -768,6 +791,7 @@ class MainWindow(QMainWindow):
         if not self.current_user:
             return
 
+        self.update_upload_path_label()
         report_date = self.selected_report_date()
         local_file = self.report_file_path(report_date)
         if not local_file.exists():
@@ -797,7 +821,6 @@ class MainWindow(QMainWindow):
             return
 
         report = rows[-1]
-        self.machine_input.setText(report.get("機台/線別", ""))
         self.work_summary.setPlainText(report.get("今日工作內容", ""))
         self.issue_notes.setPlainText(report.get("異常/待處理事項", ""))
         self.next_shift_notes.setPlainText(report.get("交接備註", ""))
@@ -850,7 +873,6 @@ class MainWindow(QMainWindow):
             rows.append({
                 "employee_id": employee_id,
                 "name": user.get("name", ""),
-                "machine": report.get("機台/線別", ""),
                 "summary": report.get("今日工作內容", ""),
                 "issues": report.get("異常/待處理事項", ""),
                 "handoff": report.get("交接備註", ""),
@@ -877,7 +899,7 @@ class MainWindow(QMainWindow):
         self.summary_table.setRowCount(len(self.summary_rows))
         for row_index, row in enumerate(self.summary_rows):
             values = [
-                str(row_index + 1), row["name"], row["employee_id"], row["machine"],
+                str(row_index + 1), row["name"], row["employee_id"],
                 row["summary"], row["issues"], row["handoff"],
             ]
             for column, value in enumerate(values):
@@ -926,18 +948,18 @@ class MainWindow(QMainWindow):
             return
 
         now = datetime.now()
+        self.update_upload_path_label()
         report_date = self.selected_report_date()
         local_file = self.report_file_path(report_date)
         local_file.parent.mkdir(parents=True, exist_ok=True)
         with local_file.open("w", encoding="utf-8-sig", newline="") as stream:
             writer = csv.writer(stream)
-            writer.writerow(["報告日期", "填寫時間", "姓名", "工號", "機台/線別", "今日工作內容", "異常/待處理事項", "交接備註"])
+            writer.writerow(["報告日期", "填寫時間", "姓名", "工號", "今日工作內容", "異常/待處理事項", "交接備註"])
             writer.writerow([
                 report_date,
                 now.strftime("%Y-%m-%d %H:%M:%S"),
                 self.current_user["name"],
                 self.current_user["employee_id"],
-                self.machine_input.text(),
                 self.work_summary.toPlainText(),
                 self.issue_notes.toPlainText(),
                 self.next_shift_notes.toPlainText(),
@@ -957,7 +979,11 @@ class MainWindow(QMainWindow):
 
         self.set_ftp_connected(True)
         QMessageBox.information(self, "完成", "工作匯報已儲存並上傳FTP。")
-        self.status_label.setText("已上傳：{0}".format(local_file.name))
+        self.status_label.setText("已上傳：{0}；FTP位置：{1}".format(
+            local_file.name,
+            posixpath.join(employee_report_remote_dir(self.current_user["employee_id"], report_date), local_file.name),
+        ))
+        self.update_upload_path_label()
         self.refresh_daily_summary(show_errors=False)
 
 
