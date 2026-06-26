@@ -34,6 +34,7 @@ FTP_HOST = "192.168.153.7"
 FTP_USER = "User"
 FTP_PASSWORD = "123456"
 FTP_REPORT_DIR = "Largan_Machine_data/個人資夾/@交接資料/每日工作匯報"
+FTP_USER_DB_DIR = "Largan_Machine_data/個人資夾/@交接資料/每日工作匯報/人員資料"
 
 APP_DIR = Path(__file__).resolve().parent
 USER_DB_PATH = APP_DIR / "users.json"
@@ -74,13 +75,18 @@ def ensure_ftp_directory(ftp, directory):
             ftp.cwd(part)
 
 
-def upload_to_ftp(local_file):
+def upload_to_ftp(local_file, remote_dir):
     with FTP(FTP_HOST, timeout=30) as ftp:
         ftp.login(FTP_USER, FTP_PASSWORD)
-        ensure_ftp_directory(ftp, FTP_REPORT_DIR)
+        ensure_ftp_directory(ftp, remote_dir)
         remote_name = posixpath.basename(str(local_file))
         with open(local_file, "rb") as stream:
             ftp.storbinary("STOR " + remote_name, stream)
+
+
+def upload_user_db_to_ftp():
+    """Upload the locally saved user database to FTP after local persistence."""
+    upload_to_ftp(USER_DB_PATH, FTP_USER_DB_DIR)
 
 
 class RegisterDialog(QDialog):
@@ -142,8 +148,17 @@ class RegisterDialog(QDialog):
             "password_hash": hash_password(password),
         }
         save_user_db(self.users)
+        try:
+            upload_user_db_to_ftp()
+        except Exception as exc:  # UI boundary: local registration remains available.
+            QMessageBox.warning(
+                self,
+                "FTP上傳失敗",
+                "人員資料已先儲存在本機，但上傳FTP失敗：\n{0}".format(exc),
+            )
+        else:
+            QMessageBox.information(self, "完成", "人員註冊完成，且已上傳FTP。")
         self.registered_employee_id = employee_id
-        QMessageBox.information(self, "完成", "人員註冊完成。")
         self.accept()
 
 
@@ -198,7 +213,16 @@ class ChangePasswordDialog(QDialog):
 
         user["password_hash"] = hash_password(new_password)
         save_user_db(self.users)
-        QMessageBox.information(self, "完成", "密碼已更新。")
+        try:
+            upload_user_db_to_ftp()
+        except Exception as exc:  # UI boundary: local password change remains available.
+            QMessageBox.warning(
+                self,
+                "FTP上傳失敗",
+                "密碼已先更新在本機，但上傳FTP失敗：\n{0}".format(exc),
+            )
+        else:
+            QMessageBox.information(self, "完成", "密碼已更新，且已上傳FTP。")
         self.accept()
 
 
@@ -398,7 +422,7 @@ class MainWindow(QMainWindow):
             ])
 
         try:
-            upload_to_ftp(local_file)
+            upload_to_ftp(local_file, FTP_REPORT_DIR)
         except Exception as exc:  # UI boundary: show any FTP/file error to the operator.
             QMessageBox.critical(self, "上傳失敗", "已本機儲存，但FTP上傳失敗：\n{0}".format(exc))
             self.status_label.setText("本機備份：{0}；FTP上傳失敗。".format(local_file))
