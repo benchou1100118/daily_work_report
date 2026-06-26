@@ -35,6 +35,7 @@ from PySide2.QtWidgets import (
 
 FTP_HOST = "192.168.153.7"
 FTP_PORT = 21
+FTP_CONNECT_TIMEOUT_SECONDS = 5
 FTP_USER = "User"
 FTP_PASSWORD = "123456"
 FTP_ROOT_DIR = "Largan_Machine_data/723_daily_work_report"
@@ -116,7 +117,7 @@ def open_ftp_connection():
     """
     ftp = FTP()
     ftp.encoding = "utf-8"
-    ftp.connect(FTP_HOST, FTP_PORT, timeout=30)
+    ftp.connect(FTP_HOST, FTP_PORT, timeout=FTP_CONNECT_TIMEOUT_SECONDS)
     ftp.login(FTP_USER, FTP_PASSWORD)
     ftp.set_pasv(True)
     return ftp

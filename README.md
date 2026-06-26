@@ -36,7 +36,7 @@
 
 人員不再由程式內或獨立名單預先建檔，改由使用者在介面中註冊。註冊完成後，帳號與密碼雜湊會先保存在本機 `users.json`，再將該檔案上傳到 FTP 的人員資料資料夾。
 
-更改密碼時也會採用相同流程：先更新本機 `users.json`，再上傳 FTP。若 FTP 連線失敗，本機人員資料仍會保留最新版本，程式會顯示上傳失敗提示，待網路或 FTP 恢復後可再次註冊/更新觸發上傳。FTP 連線會明確連到 21 port，登入後使用 UTF-8 檔名編碼與被動模式，並優先以登入帳號可存取的相對路徑進入資料夾，避免部分 NAS/Windows FTP 不允許切換到根目錄 `/` 時造成上傳失敗。登入畫面下方可按「重新確認FTP」，程式會重新執行連線、登入、目前目錄、目錄清單與必要資料夾確認。
+更改密碼時也會採用相同流程：先更新本機 `users.json`，再上傳 FTP。若 FTP 連線失敗，本機人員資料仍會保留最新版本，程式會顯示上傳失敗提示，待網路或 FTP 恢復後可再次註冊/更新觸發上傳。FTP 連線會明確連到 21 port，預設連線逾時為 5 秒，登入後使用 UTF-8 檔名編碼與被動模式，並優先以登入帳號可存取的相對路徑進入資料夾，避免部分 NAS/Windows FTP 不允許切換到根目錄 `/` 時造成上傳失敗。登入畫面下方可按「重新確認FTP」，或在「當日統整」按「立即更新」時，程式會重新執行 FTP 同步；若 5 秒內無法連線，會直接顯示錯誤並改用本機資料。
 
 `users.json` 由程式自動建立與維護；請避免手動修改密碼雜湊欄位。
 
@@ -70,7 +70,7 @@ YYYYMMDD_工號.csv
 若畫面顯示「上傳失敗」，可先在程式所在資料夾用不啟動 UI 的方式確認 FTP 狀態：
 
 ```bash
-python tools/ftp_diagnostics.py --timeout 5
+python tools/ftp_diagnostics.py
 ```
 
 此指令會依序測試 TCP 是否可連到 `192.168.153.7:21`、帳密登入、起始目錄清單，以及程式需要的 FTP 資料夾是否可進入或建立。若第一步出現 `Network is unreachable`，代表目前電腦不在可連到該 FTP 的內網/VPN 路由上，需先確認網路、VPN、防火牆或 FTP 主機狀態。
@@ -78,11 +78,11 @@ python tools/ftp_diagnostics.py --timeout 5
 若連線與資料夾檢查都成功，可再做小檔案上傳/列檔/刪除測試：
 
 ```bash
-python tools/ftp_diagnostics.py --timeout 5 --upload-test
+python tools/ftp_diagnostics.py --upload-test
 ```
 
 也可以指定要測試的遠端資料夾，例如測試某位人員當月工作日誌資料夾：
 
 ```bash
-python tools/ftp_diagnostics.py --timeout 5 --upload-test --remote-dir Largan_Machine_data/723_daily_work_report/daily_work/1100118/202606
+python tools/ftp_diagnostics.py --upload-test --remote-dir Largan_Machine_data/723_daily_work_report/daily_work/1100118/202606
 ```
