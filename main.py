@@ -36,8 +36,9 @@ from PySide2.QtWidgets import (
 FTP_HOST = "192.168.153.7"
 FTP_USER = "User"
 FTP_PASSWORD = "123456"
-FTP_REPORT_DIR = "Largan_Machine_data/723_daily_work_report"
-FTP_USER_DB_DIR = "Largan_Machine_data/723_daily_work_report/people"
+FTP_ROOT_DIR = "Largan_Machine_data/723_daily_work_report"
+FTP_USER_DB_DIR = FTP_ROOT_DIR + "/people"
+FTP_DAILY_DATA_DIR = FTP_ROOT_DIR + "/daily_data"
 SUPER_USER_EMPLOYEE_ID = "1100118"
 SORT_ORDER_FILENAME = "daily_report_sort_order.json"
 
@@ -121,7 +122,7 @@ def check_ftp_connection():
     report folder would make the second check resolve from that nested folder
     instead of from the login location.
     """
-    for remote_dir in (FTP_REPORT_DIR, FTP_USER_DB_DIR):
+    for remote_dir in (FTP_ROOT_DIR, FTP_USER_DB_DIR, FTP_DAILY_DATA_DIR):
         with open_ftp_connection() as ftp:
             ensure_ftp_directory(ftp, remote_dir)
 
@@ -169,6 +170,16 @@ def list_ftp_files(remote_dir):
 def upload_user_db_to_ftp():
     """Upload the locally saved user database to FTP after local persistence."""
     upload_to_ftp(USER_DB_PATH, FTP_USER_DB_DIR)
+
+
+def month_folder(report_date):
+    """Return YYYYMM folder name for a report date string formatted as YYYY-MM-DD."""
+    return report_date[:7].replace("-", "")
+
+
+def employee_report_remote_dir(employee_id, report_date):
+    """Return the FTP folder for one employee's reports in a specific month."""
+    return posixpath.join(FTP_DAILY_DATA_DIR, employee_id, month_folder(report_date))
 
 
 def load_sort_order():
@@ -682,20 +693,32 @@ class MainWindow(QMainWindow):
             selected_date.year(), selected_date.month(), selected_date.day()
         )
 
-    def report_file_path(self, report_date):
-        filename = "{date}_{employee_id}.csv".format(
+    def report_filename(self, report_date):
+        return "{date}_{employee_id}.csv".format(
             date=report_date.replace("-", ""),
             employee_id=self.current_user["employee_id"],
         )
-        return REPORT_CACHE_DIR / filename
 
-    def legacy_report_file_path(self, report_date):
-        filename = "{date}_{employee_id}_{name}.csv".format(
-            date=report_date.replace("-", ""),
+    def report_file_path(self, report_date):
+        return (
+            REPORT_CACHE_DIR
+            / self.current_user["employee_id"]
+            / month_folder(report_date)
+            / self.report_filename(report_date)
+        )
+
+    def legacy_report_file_paths(self, report_date):
+        date_prefix = report_date.replace("-", "")
+        plain_filename = "{date}_{employee_id}.csv".format(
+            date=date_prefix,
+            employee_id=self.current_user["employee_id"],
+        )
+        named_filename = "{date}_{employee_id}_{name}.csv".format(
+            date=date_prefix,
             employee_id=self.current_user["employee_id"],
             name=self.current_user["name"],
         )
-        return REPORT_CACHE_DIR / filename
+        return [REPORT_CACHE_DIR / plain_filename, REPORT_CACHE_DIR / named_filename]
 
     def is_super_user(self):
         return bool(self.current_user and self.current_user.get("employee_id") == SUPER_USER_EMPLOYEE_ID)
@@ -713,9 +736,10 @@ class MainWindow(QMainWindow):
         report_date = self.selected_report_date()
         local_file = self.report_file_path(report_date)
         if not local_file.exists():
-            legacy_file = self.legacy_report_file_path(report_date)
-            if legacy_file.exists():
-                local_file = legacy_file
+            for legacy_file in self.legacy_report_file_paths(report_date):
+                if legacy_file.exists():
+                    local_file = legacy_file
+                    break
 
         if not local_file.exists():
             self.clear_report_fields()
@@ -749,14 +773,22 @@ class MainWindow(QMainWindow):
         return "{0:04d}-{1:02d}-{2:02d}".format(today.year(), today.month(), today.day())
 
     def sync_today_reports_from_ftp(self, report_date):
-        """Download today's report CSV files so summary reflects multi-user FTP updates."""
+        """Download today's report CSV files from daily_data/<工號>/<YYYYMM>."""
         REPORT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         prefix = report_date.replace("-", "")
-        for remote_name in list_ftp_files(FTP_REPORT_DIR):
-            if remote_name.startswith(prefix) and remote_name.endswith(".csv"):
-                download_from_ftp(FTP_REPORT_DIR, remote_name, REPORT_CACHE_DIR / remote_name)
+        month = month_folder(report_date)
+        for employee_id in list_ftp_files(FTP_DAILY_DATA_DIR):
+            remote_dir = employee_report_remote_dir(employee_id, report_date)
+            try:
+                remote_names = list_ftp_files(remote_dir)
+            except Exception:
+                continue
+            for remote_name in remote_names:
+                if remote_name.startswith(prefix) and remote_name.endswith(".csv"):
+                    local_file = REPORT_CACHE_DIR / employee_id / month / remote_name
+                    download_from_ftp(remote_dir, remote_name, local_file)
         try:
-            download_from_ftp(FTP_REPORT_DIR, SORT_ORDER_FILENAME, SORT_ORDER_PATH)
+            download_from_ftp(FTP_ROOT_DIR, SORT_ORDER_FILENAME, SORT_ORDER_PATH)
         except Exception:
             pass
 
@@ -769,7 +801,7 @@ class MainWindow(QMainWindow):
         prefix = report_date.replace("-", "")
         reports_by_employee = {}
         if REPORT_CACHE_DIR.exists():
-            for path in REPORT_CACHE_DIR.glob(prefix + "_*.csv"):
+            for path in REPORT_CACHE_DIR.rglob(prefix + "_*.csv"):
                 try:
                     report = self.read_report_csv(path)
                 except Exception:
@@ -836,12 +868,12 @@ class MainWindow(QMainWindow):
         # Multi-user note: refresh remote order immediately before writing so the
         # upload is based on the newest available FTP copy, then publish one JSON.
         try:
-            download_from_ftp(FTP_REPORT_DIR, SORT_ORDER_FILENAME, SORT_ORDER_PATH)
+            download_from_ftp(FTP_ROOT_DIR, SORT_ORDER_FILENAME, SORT_ORDER_PATH)
         except Exception:
             pass
         save_sort_order(order, self.current_user)
         try:
-            upload_to_ftp(SORT_ORDER_PATH, FTP_REPORT_DIR)
+            upload_to_ftp(SORT_ORDER_PATH, FTP_ROOT_DIR)
         except Exception as exc:
             self.set_ftp_connected(False, str(exc))
             QMessageBox.warning(self, "排序上拋失敗", "排序已先儲存在本機，但上拋FTP失敗：\n{0}".format(exc))
@@ -858,10 +890,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "錯誤", "請填寫今日工作內容。")
             return
 
-        REPORT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         now = datetime.now()
         report_date = self.selected_report_date()
         local_file = self.report_file_path(report_date)
+        local_file.parent.mkdir(parents=True, exist_ok=True)
         with local_file.open("w", encoding="utf-8-sig", newline="") as stream:
             writer = csv.writer(stream)
             writer.writerow(["報告日期", "填寫時間", "姓名", "工號", "機台/線別", "今日工作內容", "異常/待處理事項", "交接備註"])
@@ -877,7 +909,10 @@ class MainWindow(QMainWindow):
             ])
 
         try:
-            upload_to_ftp(local_file, FTP_REPORT_DIR)
+            upload_to_ftp(
+                local_file,
+                employee_report_remote_dir(self.current_user["employee_id"], report_date),
+            )
         except Exception as exc:  # UI boundary: show any FTP/file error to the operator.
             self.set_ftp_connected(False, str(exc))
             QMessageBox.critical(self, "上傳失敗", "已本機儲存，但FTP上傳失敗：\n{0}".format(exc))
