@@ -275,6 +275,93 @@ class ChangePasswordDialog(QDialog):
         self.accept()
 
 
+class DeleteUserDialog(QDialog):
+    def __init__(self, users, current_user, parent=None):
+        super(DeleteUserDialog, self).__init__(parent)
+        self.users = users
+        self.current_user = current_user
+        self.deleted_employee_ids = []
+        self.setWindowTitle("刪除人員名單")
+        self.resize(420, 320)
+
+        hint = QLabel("請選擇要刪除的人員。super user 本身不可刪除。")
+        hint.setWordWrap(True)
+
+        self.user_table = QTableWidget(0, 2)
+        self.user_table.setHorizontalHeaderLabels(["姓名", "工號"])
+        self.user_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.user_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.user_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.refresh_user_table()
+
+        delete_button = QPushButton("刪除選取人員")
+        close_button = QPushButton("關閉")
+        delete_button.clicked.connect(self.delete_selected_user)
+        close_button.clicked.connect(self.accept)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(delete_button)
+        buttons.addWidget(close_button)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(hint)
+        layout.addWidget(self.user_table)
+        layout.addLayout(buttons)
+
+    def refresh_user_table(self):
+        rows = sorted(self.users.values(), key=lambda user: user.get("employee_id", ""))
+        self.user_table.setRowCount(len(rows))
+        for row_index, user in enumerate(rows):
+            self.user_table.setItem(row_index, 0, QTableWidgetItem(user.get("name", "")))
+            self.user_table.setItem(row_index, 1, QTableWidgetItem(user.get("employee_id", "")))
+        self.user_table.resizeColumnsToContents()
+
+    def delete_selected_user(self):
+        selected_row = self.user_table.currentRow()
+        if selected_row < 0:
+            QMessageBox.warning(self, "錯誤", "請先選擇要刪除的人員。")
+            return
+
+        employee_item = self.user_table.item(selected_row, 1)
+        if employee_item is None:
+            return
+        employee_id = employee_item.text()
+        if employee_id == SUPER_USER_EMPLOYEE_ID:
+            QMessageBox.warning(self, "錯誤", "不可刪除 super user。")
+            return
+
+        user = self.users.get(employee_id)
+        if not user:
+            QMessageBox.warning(self, "錯誤", "找不到選取的人員資料。")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "確認刪除",
+            "確定要刪除 {0} ({1}) 嗎？".format(user.get("name", ""), employee_id),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        del self.users[employee_id]
+        save_user_db(self.users)
+        try:
+            upload_user_db_to_ftp()
+        except Exception as exc:  # UI boundary: local deletion remains available.
+            QMessageBox.warning(
+                self,
+                "FTP上傳失敗",
+                "人員已先從本機名單刪除，但上傳FTP失敗：\n{0}".format(exc),
+            )
+        else:
+            QMessageBox.information(self, "完成", "人員已刪除，且已上傳FTP。")
+        self.deleted_employee_ids.append(employee_id)
+        self.refresh_user_table()
+
+
 class SummaryTableWidget(QTableWidget):
     """Table widget that reorders whole rows without leaving blank cells."""
 
@@ -347,12 +434,15 @@ class MainWindow(QMainWindow):
         self.register_button = QPushButton("註冊新人員")
         self.logout_button = QPushButton("登出")
         self.change_password_button = QPushButton("更改密碼")
+        self.delete_user_button = QPushButton("刪除人員")
         self.logout_button.setEnabled(False)
         self.change_password_button.setEnabled(False)
+        self.delete_user_button.setEnabled(False)
         self.login_button.clicked.connect(self.login)
         self.register_button.clicked.connect(self.open_register_dialog)
         self.logout_button.clicked.connect(self.logout)
         self.change_password_button.clicked.connect(self.open_change_password)
+        self.delete_user_button.clicked.connect(self.open_delete_user_dialog)
         login_layout.addWidget(QLabel("工號"), 0, 0)
         login_layout.addWidget(self.employee_id_input, 0, 1)
         login_layout.addWidget(QLabel("密碼"), 1, 0)
@@ -361,6 +451,7 @@ class MainWindow(QMainWindow):
         login_layout.addWidget(self.register_button, 0, 3)
         login_layout.addWidget(self.logout_button, 1, 2)
         login_layout.addWidget(self.change_password_button, 1, 3)
+        login_layout.addWidget(self.delete_user_button, 2, 3)
 
         self.tabs = QTabWidget()
         edit_tab = QWidget()
@@ -445,6 +536,7 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(True)
         self.logout_button.setEnabled(True)
         self.change_password_button.setEnabled(True)
+        self.delete_user_button.setEnabled(self.is_super_user())
         self.login_button.setEnabled(False)
         self.register_button.setEnabled(False)
         self.employee_id_input.setEnabled(False)
@@ -458,6 +550,7 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(False)
         self.logout_button.setEnabled(False)
         self.change_password_button.setEnabled(False)
+        self.delete_user_button.setEnabled(False)
         self.login_button.setEnabled(True)
         self.register_button.setEnabled(True)
         self.employee_id_input.setEnabled(True)
@@ -469,6 +562,15 @@ class MainWindow(QMainWindow):
             return
         dialog = ChangePasswordDialog(self.users, self.current_user, self)
         dialog.exec_()
+
+    def open_delete_user_dialog(self):
+        if not self.is_super_user():
+            QMessageBox.warning(self, "權限不足", "只有 super user 可以刪除人員名單。")
+            return
+        dialog = DeleteUserDialog(self.users, self.current_user, self)
+        dialog.exec_()
+        if dialog.deleted_employee_ids:
+            self.refresh_daily_summary(show_errors=False)
 
     def selected_report_date(self):
         selected_date = self.calendar.selectedDate()
