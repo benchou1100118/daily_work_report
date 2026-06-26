@@ -34,6 +34,7 @@ from PySide2.QtWidgets import (
 )
 
 FTP_HOST = "192.168.153.7"
+FTP_PORT = 21
 FTP_USER = "User"
 FTP_PASSWORD = "123456"
 FTP_ROOT_DIR = "Largan_Machine_data/723_daily_work_report"
@@ -104,27 +105,40 @@ def ensure_ftp_directory(ftp, directory):
 
 
 def open_ftp_connection():
-    """Open an FTP connection using settings that work with common NAS servers."""
-    ftp = FTP(FTP_HOST, timeout=30)
+    """Open an FTP connection using settings that work with common NAS servers.
+
+    The connection flow intentionally mirrors the standard ftplib pattern:
+    create the FTP client, connect to host/port with a timeout, then login.
+    Keeping the port explicit makes the UI status check match manual FTP
+    troubleshooting steps used by operators.
+    """
+    ftp = FTP()
     ftp.encoding = "utf-8"
-    ftp.set_pasv(True)
+    ftp.connect(FTP_HOST, FTP_PORT, timeout=30)
     ftp.login(FTP_USER, FTP_PASSWORD)
+    ftp.set_pasv(True)
     return ftp
 
 
 def check_ftp_connection():
-    """Verify FTP is reachable and required remote folders can be entered/created.
+    """Verify FTP login, current directory, listing, and app folders.
 
-    Each configured folder is checked with a fresh FTP session.  The handoff
-    server is commonly opened by operators as
+    This is the same confirmation mechanism operators use manually: connect to
+    host/port, login, confirm ``pwd()``, list the starting directory, then enter
+    or create the required handoff folders.  Each configured folder is checked
+    with a fresh FTP session because the handoff server is commonly opened as
     ``ftp://User@192.168.153.7/Largan_Machine_data`` and treats paths as
     relative to the login location.  Reusing one session after entering the
-    report folder would make the second check resolve from that nested folder
-    instead of from the login location.
+    report folder would make the next check resolve from that nested folder.
     """
+    with open_ftp_connection() as ftp:
+        ftp.pwd()
+        ftp.nlst()
+
     for remote_dir in (FTP_ROOT_DIR, FTP_USER_DB_DIR, FTP_DAILY_DATA_DIR):
         with open_ftp_connection() as ftp:
             ensure_ftp_directory(ftp, remote_dir)
+            ftp.pwd()
 
 
 def upload_to_ftp(local_file, remote_dir):
@@ -580,8 +594,13 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(edit_tab, "登打資料")
         self.tabs.addTab(summary_tab, "當日統整")
 
+        ftp_status_layout = QHBoxLayout()
         self.ftp_status_label = QLabel("FTP狀態：尚未檢查")
         self.ftp_status_label.setWordWrap(True)
+        self.recheck_ftp_button = QPushButton("重新確認FTP")
+        self.recheck_ftp_button.clicked.connect(self.recheck_ftp_connection)
+        ftp_status_layout.addWidget(self.ftp_status_label, 1)
+        ftp_status_layout.addWidget(self.recheck_ftp_button)
         self.status_label = QLabel("請輸入工號與密碼登入；未註冊者請先註冊。")
         self.status_label.setWordWrap(True)
         self.save_button = QPushButton("儲存並上傳FTP")
@@ -590,7 +609,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(login_group)
         layout.addWidget(self.tabs)
-        layout.addWidget(self.ftp_status_label)
+        layout.addLayout(ftp_status_layout)
         layout.addWidget(self.status_label)
         layout.addWidget(self.save_button, alignment=Qt.AlignRight)
         self.setCentralWidget(central)
@@ -612,6 +631,22 @@ class MainWindow(QMainWindow):
             self.set_ftp_connected(False, str(exc))
         else:
             self.set_ftp_connected(True)
+
+    def recheck_ftp_connection(self):
+        self.recheck_ftp_button.setEnabled(False)
+        self.status_label.setText("正在重新確認FTP連線、目前目錄、清單與必要資料夾...")
+        QApplication.processEvents()
+        try:
+            check_ftp_connection()
+        except Exception as exc:
+            self.set_ftp_connected(False, str(exc))
+            QMessageBox.warning(self, "FTP確認失敗", "FTP重新確認失敗：\n{0}".format(exc))
+            self.status_label.setText("FTP重新確認失敗，已維持本機備份模式。")
+        else:
+            self.set_ftp_connected(True, "已確認登入、目錄清單與必要資料夾")
+            self.status_label.setText("FTP重新確認完成，可正常同步與上傳。")
+        finally:
+            self.recheck_ftp_button.setEnabled(True)
 
     def open_register_dialog(self):
         dialog = RegisterDialog(self.users, self)
