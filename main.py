@@ -65,7 +65,13 @@ def load_user_db():
     return users
 
 
+def ensure_local_parent(path):
+    """Create the local parent folder before writing application-managed files."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+
 def save_user_db(users):
+    ensure_local_parent(USER_DB_PATH)
     with USER_DB_PATH.open("w", encoding="utf-8") as stream:
         json.dump(users, stream, ensure_ascii=False, indent=2)
 
@@ -105,6 +111,13 @@ def open_ftp_connection():
     return ftp
 
 
+def check_ftp_connection():
+    """Verify FTP is reachable and required remote folders can be entered/created."""
+    with open_ftp_connection() as ftp:
+        ensure_ftp_directory(ftp, FTP_REPORT_DIR)
+        ensure_ftp_directory(ftp, FTP_USER_DB_DIR)
+
+
 def upload_to_ftp(local_file, remote_dir):
     """Upload a file and overwrite the remote copy as safely as possible."""
     with open_ftp_connection() as ftp:
@@ -131,6 +144,7 @@ def upload_to_ftp(local_file, remote_dir):
 
 def download_from_ftp(remote_dir, remote_name, local_file):
     """Download one FTP file into local_file."""
+    ensure_local_parent(local_file)
     with open_ftp_connection() as ftp:
         ensure_ftp_directory(ftp, remote_dir)
         with open(local_file, "wb") as stream:
@@ -170,6 +184,7 @@ def save_sort_order(order, user):
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "updated_by": "{0} ({1})".format(user["name"], user["employee_id"]) if user else "",
     }
+    ensure_local_parent(SORT_ORDER_PATH)
     with SORT_ORDER_PATH.open("w", encoding="utf-8") as stream:
         json.dump(payload, stream, ensure_ascii=False, indent=2)
     return payload
@@ -448,6 +463,7 @@ class MainWindow(QMainWindow):
         self.users = load_user_db()
         self.current_user = None
         self.summary_rows = []
+        self.ftp_connected = False
         self.setWindowTitle("每日工作匯報")
         self.resize(900, 680)
         self._build_ui()
@@ -455,6 +471,7 @@ class MainWindow(QMainWindow):
         self.summary_timer.setInterval(60 * 1000)
         self.summary_timer.timeout.connect(self.refresh_daily_summary)
         self.summary_timer.start()
+        self.initialize_ftp_connection()
         self.refresh_daily_summary(show_errors=False)
 
     def _build_ui(self):
@@ -544,6 +561,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(edit_tab, "登打資料")
         self.tabs.addTab(summary_tab, "當日統整")
 
+        self.ftp_status_label = QLabel("FTP狀態：尚未檢查")
+        self.ftp_status_label.setWordWrap(True)
         self.status_label = QLabel("請輸入工號與密碼登入；未註冊者請先註冊。")
         self.status_label.setWordWrap(True)
         self.save_button = QPushButton("儲存並上傳FTP")
@@ -552,9 +571,28 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(login_group)
         layout.addWidget(self.tabs)
+        layout.addWidget(self.ftp_status_label)
         layout.addWidget(self.status_label)
         layout.addWidget(self.save_button, alignment=Qt.AlignRight)
         self.setCentralWidget(central)
+
+    def set_ftp_connected(self, connected, detail=""):
+        self.ftp_connected = connected
+        if connected:
+            text = "FTP狀態：FTP連線中"
+        else:
+            text = "FTP狀態：FTP未連線使用本機"
+        if detail:
+            text = "{0}（{1}）".format(text, detail)
+        self.ftp_status_label.setText(text)
+
+    def initialize_ftp_connection(self):
+        try:
+            check_ftp_connection()
+        except Exception as exc:
+            self.set_ftp_connected(False, str(exc))
+        else:
+            self.set_ftp_connected(True)
 
     def open_register_dialog(self):
         dialog = RegisterDialog(self.users, self)
@@ -704,7 +742,7 @@ class MainWindow(QMainWindow):
 
     def sync_today_reports_from_ftp(self, report_date):
         """Download today's report CSV files so summary reflects multi-user FTP updates."""
-        REPORT_CACHE_DIR.mkdir(exist_ok=True)
+        REPORT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         prefix = report_date.replace("-", "")
         for remote_name in list_ftp_files(FTP_REPORT_DIR):
             if remote_name.startswith(prefix) and remote_name.endswith(".csv"):
@@ -753,8 +791,11 @@ class MainWindow(QMainWindow):
         try:
             self.sync_today_reports_from_ftp(report_date)
         except Exception as exc:
+            self.set_ftp_connected(False, str(exc))
             if show_errors:
                 self.status_label.setText("FTP同步失敗，已改用本機資料更新統整：{0}".format(exc))
+        else:
+            self.set_ftp_connected(True)
 
         self.summary_rows = self.collect_today_summary(report_date)
         self.summary_table.blockSignals(True)
@@ -794,8 +835,10 @@ class MainWindow(QMainWindow):
         try:
             upload_to_ftp(SORT_ORDER_PATH, FTP_REPORT_DIR)
         except Exception as exc:
+            self.set_ftp_connected(False, str(exc))
             QMessageBox.warning(self, "排序上拋失敗", "排序已先儲存在本機，但上拋FTP失敗：\n{0}".format(exc))
         else:
+            self.set_ftp_connected(True)
             self.status_label.setText("排序已由 super user 上拋FTP。")
         self.refresh_daily_summary(show_errors=False)
 
@@ -807,7 +850,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "錯誤", "請填寫今日工作內容。")
             return
 
-        REPORT_CACHE_DIR.mkdir(exist_ok=True)
+        REPORT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         now = datetime.now()
         report_date = self.selected_report_date()
         local_file = self.report_file_path(report_date)
@@ -828,11 +871,13 @@ class MainWindow(QMainWindow):
         try:
             upload_to_ftp(local_file, FTP_REPORT_DIR)
         except Exception as exc:  # UI boundary: show any FTP/file error to the operator.
+            self.set_ftp_connected(False, str(exc))
             QMessageBox.critical(self, "上傳失敗", "已本機儲存，但FTP上傳失敗：\n{0}".format(exc))
             self.status_label.setText("本機備份：{0}；FTP上傳失敗。".format(local_file))
             self.refresh_daily_summary(show_errors=False)
             return
 
+        self.set_ftp_connected(True)
         QMessageBox.information(self, "完成", "工作匯報已儲存並上傳FTP。")
         self.status_label.setText("已上傳：{0}".format(local_file.name))
         self.refresh_daily_summary(show_errors=False)
